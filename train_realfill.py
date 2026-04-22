@@ -1,8 +1,53 @@
+import warnings
+import logging
+
+import io
+import contextlib
+
+
+warnings.filterwarnings(
+    "ignore",
+    message=r".*torch.utils._pytree._register_pytree_node.*",
+    category=FutureWarning,
+)
+
+warnings.filterwarnings(
+    "ignore",
+    message=r".*use_reentrant parameter should be passed explicitly.*",
+    category=UserWarning,
+)
+
+warnings.filterwarnings(
+    "ignore",
+    message=r".*None of the inputs have requires_grad=True.*",
+    category=UserWarning,
+)
+
+warnings.filterwarnings(
+    "ignore",
+    message=r".*lr_scheduler.step\(\).*optimizer.step\(\).*",
+    category=UserWarning,
+)
+
+logging.getLogger("torch.distributed.elastic.multiprocessing.redirects").setLevel(logging.ERROR)
+
+warnings.filterwarnings(
+    "ignore",
+    message=r".*triton not found; flop counting will not work for triton kernels.*",
+)
+
+warnings.filterwarnings(
+    "ignore",
+    message=r".*A matching Triton is not available, some optimizations will not be enabled.*",
+)
+
+logging.getLogger("torch.utils.flop_counter").setLevel(logging.ERROR)
+logging.getLogger("xformers").setLevel(logging.ERROR)
+
 import random
 import argparse
 import copy
 import itertools
-import logging
 import math
 import os
 import shutil
@@ -129,18 +174,23 @@ def log_validation(
 
     target_dir = Path(args.train_data_dir) / "target"
     target_image, target_mask = target_dir / "target.png", target_dir / "mask.png"
-    image, mask_image = Image.open(target_image), Image.open(target_mask)
+    inference_size = (512, 512)
+    base_image = base_image.resize(inference_size, Image.LANCZOS)
+    mask_image = mask_image.resize(inference_size, Image.NEAREST)
 
-    if image.mode != "RGB":
-        image = image.convert("RGB")
+    if base_image.mode != "RGB":
+        base_image = base_image.convert("RGB")
+    if mask_image.mode != "L":
+        mask_image = mask_image.convert("L")
 
     images = []
     for _ in range(args.num_validation_images):
-        image = pipeline(
-            prompt="a photo of sks", image=image, mask_image=mask_image,
+        result = pipeline(
+            prompt="a photo of sks", image=base_image, mask_image=mask_image,
             num_inference_steps=200, guidance_scale=1, generator=generator
         ).images[0]
-        images.append(image)
+        images.append(result)
+
 
     for tracker in accelerator.trackers:
         if tracker.name == "tensorboard":
@@ -221,7 +271,7 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
-        "--train_batch_size", type=int, default=4, help="Batch size (per device) for the training dataloader."
+        "--train_batch_size", type=int, default=16, help="Batch size (per device) for the training dataloader."
     )
     parser.add_argument("--num_train_epochs", type=int, default=1)
     parser.add_argument(
@@ -294,7 +344,7 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
-        "--lr_warmup_steps", type=int, default=500, help="Number of steps for the warmup in the lr scheduler."
+        "--lr_warmup_steps", type=int, default=100, help="Number of steps for the warmup in the lr scheduler."
     )
     parser.add_argument(
         "--lr_num_cycles",
@@ -384,20 +434,32 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--lora_rank",
         type=int,
-        default=16,
+        default=8,
         help=("The dimension of the LoRA update matrices."),
     )
     parser.add_argument(
         "--lora_alpha",
         type=int,
-        default=27,
+        default=16,
         help=("The alpha constant of the LoRA update matrices."),
     )
     parser.add_argument(
         "--lora_dropout",
         type=float,
         default=0.0,
-        help="The dropout rate of the LoRA update matrices.",
+        help="Internal PEFT LoRA dropout. Keep this at 0.0 if you use --lora_layer_dropout_prob to mimic the paper's layer-level LoRA dropout more closely.",
+    )
+    parser.add_argument(
+        "--prompt_dropout_prob",
+        type=float,
+        default=0.1,
+        help="Probability of dropping the prompt conditioning during training.",
+    )
+    parser.add_argument(
+        "--mask_dropout_prob",
+        type=float,
+        default=0.1,
+        help="Probability of dropping the mask conditioning during training.",
     )
     parser.add_argument(
         "--lora_bias",
@@ -405,6 +467,13 @@ def parse_args(input_args=None):
         default="none",
         help="The bias type of the Lora update matrices. Must be 'none', 'all' or 'lora_only'.",
     )
+    parser.add_argument(
+        "--pad_to_full_batch",
+        action="store_true",
+        default=False,
+        help="If set, the training dataset will be padded by repeating some samples to ensure all batches are full.",
+    )
+
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -428,10 +497,18 @@ class RealFillDataset(Dataset):
         self,
         train_data_root,
         tokenizer,
+        train_batch_size,
         size=512,
+        pad_to_full_batch=False,
+        prompt_dropout_prob=0.1,
+        mask_dropout_prob=0.1,
+
     ):
         self.size = size
         self.tokenizer = tokenizer
+        self.prompt_dropout_prob = prompt_dropout_prob
+        self.mask_dropout_prob = mask_dropout_prob
+
 
         self.ref_data_root = Path(train_data_root) / "ref"
         self.target_image = Path(train_data_root) / "target" / "target.png"
@@ -439,7 +516,39 @@ class RealFillDataset(Dataset):
         if not (self.ref_data_root.exists() and self.target_image.exists() and self.target_mask.exists()):
             raise ValueError("Train images root doesn't exist.")
 
-        self.train_images_path = list(self.ref_data_root.iterdir()) + [self.target_image]
+        self._original_train_images_path = list(self.ref_data_root.iterdir()) + [self.target_image]
+        self.train_images_path = list(self._original_train_images_path)
+        self.cached_images = {}
+        for p in self._original_train_images_path:
+            img = Image.open(p)
+            img = exif_transpose(img)
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            self.cached_images[p] = img.copy()
+            img.close()
+
+        mask = Image.open(self.target_mask)
+        mask = exif_transpose(mask)
+        if mask.mode != "L":
+            mask = mask.convert("L")
+        self.cached_target_mask = mask.copy()
+        mask.close()
+
+
+        if pad_to_full_batch:
+            num_original_images = len(self._original_train_images_path)
+            if num_original_images > 0 and train_batch_size > 0:
+                remainder = num_original_images % train_batch_size
+                if remainder != 0:
+                    num_to_add = train_batch_size - remainder
+                    indices_to_add_from_original = random.choices(
+                        range(num_original_images), k=num_to_add
+                    )
+                    paths_to_add = [
+                        self._original_train_images_path[i] for i in indices_to_add_from_original
+                    ]
+                    self.train_images_path.extend(paths_to_add)
+
         self.num_train_images = len(self.train_images_path)
         self.train_prompt = "a photo of sks"
 
@@ -447,7 +556,7 @@ class RealFillDataset(Dataset):
             [
                 transforms_v2.RandomResize(size, int(1.125 * size)),
                 transforms_v2.RandomCrop(size),
-                transforms_v2.ToImageTensor(),
+                transforms_v2.PILToTensor(),
                 transforms_v2.ConvertImageDtype(),
                 transforms_v2.Normalize([0.5], [0.5]),
             ]
@@ -459,31 +568,33 @@ class RealFillDataset(Dataset):
     def __getitem__(self, index):
         example = {}
 
-        image = Image.open(self.train_images_path[index])
-        image = exif_transpose(image)
+        current_image_path = self.train_images_path[index]
+        image = self.cached_images[current_image_path].copy()
 
-        if not image.mode == "RGB":
-            image = image.convert("RGB")
+        is_target_image_instance = current_image_path == self.target_image
 
-        if index < len(self) - 1:
+        if not is_target_image_instance:
             weighting = Image.new("L", image.size)
         else:
-            weighting = Image.open(self.target_mask)
-            weighting = exif_transpose(weighting)
+            weighting = self.cached_target_mask.copy()
 
-        image, weighting = self.transform(image, weighting) # The range of weighting becomes [-1, 1] after self.transform
-        example["images"], example["weightings"] = image, weighting[0:1] < 0
 
-        if index == len(self) - 1:
-            example["masks"] = 1 - (example["weightings"]).float()
-        elif random.random() < 0.1:
-            example["masks"] = torch.ones_like(example["images"][0:1])
-        else:
-            example["masks"] = make_mask(example["images"], self.size)
+        image, weighting = self.transform(image, weighting)  # weighting is normalized to [-1, 1] by the transform
+        example["images"], example["weightings"] = image, (weighting[0:1] < 0)
 
-        example["conditioning_images"] = example["images"] * (example["masks"] < 0.5)
+        # - use a RANDOM training mask m for *all* images, including the target image
+        # - keep target mask information only in `weightings`, so target-image loss is restricted to known pixels
+        train_mask = make_mask(example["images"], self.size)
 
-        train_prompt = "" if random.random() < 0.1 else self.train_prompt
+        # Independent mask dropout with probability 0.1 (paper-closer approximation)
+        if random.random() < self.mask_dropout_prob:
+            train_mask = torch.zeros_like(example["images"][0:1])
+
+        example["masks"] = train_mask.float()
+        example["conditioning_images"] = example["images"] * (1.0 - example["masks"])
+
+        # Independent prompt dropout with probability 0.1
+        train_prompt = "" if random.random() < self.prompt_dropout_prob else self.train_prompt
         example["prompt_ids"] = self.tokenizer(
             train_prompt,
             truncation=True,
@@ -614,7 +725,8 @@ def main(args):
 
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
-            import xformers
+            with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                import xformers
 
             xformers_version = version.parse(xformers.__version__)
             if xformers_version == version.parse("0.0.16"):
@@ -628,6 +740,7 @@ def main(args):
     if args.gradient_checkpointing:
         unet.enable_gradient_checkpointing()
         text_encoder.gradient_checkpointing_enable()
+    
 
     # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
     def save_model_hook(models, weights, output_dir):
@@ -660,6 +773,9 @@ def main(args):
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
     if args.allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.set_float32_matmul_precision("high")
+        
 
     if args.scale_lr:
         args.unet_learning_rate = (
@@ -698,7 +814,11 @@ def main(args):
     train_dataset = RealFillDataset(
         train_data_root=args.train_data_dir,
         tokenizer=tokenizer,
+        train_batch_size=args.train_batch_size,
         size=args.resolution,
+        pad_to_full_batch=args.pad_to_full_batch,
+        prompt_dropout_prob=args.prompt_dropout_prob,
+        mask_dropout_prob=args.mask_dropout_prob,
     )
 
     train_dataloader = torch.utils.data.DataLoader(
@@ -706,7 +826,7 @@ def main(args):
         batch_size=args.train_batch_size,
         shuffle=True,
         collate_fn=collate_fn,
-        num_workers=1,
+        num_workers=0,
     )
 
     # Scheduler and math around the number of training steps.
@@ -909,6 +1029,9 @@ def main(args):
                             weight_dtype,
                             global_step,
                         )
+                        unet.train()
+                        text_encoder.train()
+
 
             logs = {"loss": loss.detach().item()}
             progress_bar.set_postfix(**logs)
@@ -959,3 +1082,29 @@ def main(args):
 if __name__ == "__main__":
     args = parse_args()
     main(args)
+
+#accelerate launch train_realfill.py `
+#    --pretrained_model_name_or_path="sd2-community/stable-diffusion-2-inpainting" `
+#    --train_data_dir="realfill_dataset\RealBench\0" `
+#    --output_dir="bench0-model" `
+#    --resolution=512 `
+#    --train_batch_size=1 `
+#    --gradient_accumulation_steps=4 `
+#    --mixed_precision=fp16 `
+#    --allow_tf32 `
+#    --use_8bit_adam `
+#    --enable_xformers_memory_efficient_attention `
+#    --set_grads_to_none `
+#    --unet_learning_rate=2e-4 `
+#    --text_encoder_learning_rate=4e-5 `
+#    --lr_scheduler="constant" `
+#    --lr_warmup_steps=100 `
+#    --max_train_steps=2000 `
+#    --validation_steps=2000 `
+#    --num_validation_images=1 `
+#    --checkpointing_steps=2000 `
+#    --lora_rank=8 `
+#    --lora_dropout=0.1 `
+#    --lora_alpha=16 `
+#    --prompt_dropout_prob=0.1 `
+#    --mask_dropout_prob=0.1 `
