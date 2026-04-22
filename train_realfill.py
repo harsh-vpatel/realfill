@@ -173,15 +173,20 @@ def log_validation(
     generator = None if args.seed is None else torch.Generator(device=accelerator.device).manual_seed(args.seed)
 
     target_dir = Path(args.train_data_dir) / "target"
-    target_image, target_mask = target_dir / "target.png", target_dir / "mask.png"
-    inference_size = (512, 512)
-    base_image = base_image.resize(inference_size, Image.LANCZOS)
-    mask_image = mask_image.resize(inference_size, Image.NEAREST)
+    target_image = target_dir / "target.png"
+    target_mask = target_dir / "mask.png"
+
+    base_image = Image.open(target_image)
+    mask_image = Image.open(target_mask)
 
     if base_image.mode != "RGB":
         base_image = base_image.convert("RGB")
     if mask_image.mode != "L":
         mask_image = mask_image.convert("L")
+
+    inference_size = (512, 512)
+    base_image = base_image.resize(inference_size, Image.LANCZOS)
+    mask_image = mask_image.resize(inference_size, Image.NEAREST)
 
     images = []
     for _ in range(args.num_validation_images):
