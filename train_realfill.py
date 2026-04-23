@@ -1,3 +1,4 @@
+from operator import index
 import warnings
 import logging
 
@@ -160,8 +161,7 @@ def log_validation(
         revision=args.revision,
     )
 
-    # set `keep_fp32_wrapper` to True because we do not want to remove
-    # mixed precision hooks while we are still training
+    # keep wrappers because training is ongoing
     pipeline.unet = accelerator.unwrap_model(unet, keep_fp32_wrapper=True)
     pipeline.text_encoder = accelerator.unwrap_model(text_encoder, keep_fp32_wrapper=True)
     pipeline.scheduler = DDPMScheduler.from_config(pipeline.scheduler.config)
@@ -169,42 +169,41 @@ def log_validation(
     pipeline = pipeline.to(accelerator.device)
     pipeline.set_progress_bar_config(disable=True)
 
-    # run inference
-    generator = None if args.seed is None else torch.Generator(device=accelerator.device).manual_seed(args.seed)
+    generator = None
+    if args.seed is not None:
+        generator = torch.Generator(device=accelerator.device).manual_seed(args.seed)
 
     target_dir = Path(args.train_data_dir) / "target"
     target_image = target_dir / "target.png"
     target_mask = target_dir / "mask.png"
 
-    base_image = Image.open(target_image)
+    image = Image.open(target_image)
     mask_image = Image.open(target_mask)
 
-    if base_image.mode != "RGB":
-        base_image = base_image.convert("RGB")
-    if mask_image.mode != "L":
-        mask_image = mask_image.convert("L")
+    if image.mode != "RGB":
+        image = image.convert("RGB")
 
-    inference_size = (512, 512)
-    base_image = base_image.resize(inference_size, Image.LANCZOS)
-    mask_image = mask_image.resize(inference_size, Image.NEAREST)
-
+    # keep mask as loaded, matching the sample more closely
     images = []
     for _ in range(args.num_validation_images):
-        result = pipeline(
-            prompt="a photo of sks", image=base_image, mask_image=mask_image,
-            num_inference_steps=200, guidance_scale=1, generator=generator
+        image = pipeline(
+            prompt="a photo of sks",
+            image=image,
+            mask_image=mask_image,
+            num_inference_steps=200,
+            guidance_scale=1,
+            generator=generator,
         ).images[0]
-        images.append(result)
-
+        images.append(image)
 
     for tracker in accelerator.trackers:
         if tracker.name == "tensorboard":
             np_images = np.stack([np.asarray(img) for img in images])
-            tracker.writer.add_images(f"validation", np_images, epoch, dataformats="NHWC")
+            tracker.writer.add_images("validation", np_images, epoch, dataformats="NHWC")
         if tracker.name == "wandb":
             tracker.log(
                 {
-                    f"validation": [
+                    "validation": [
                         wandb.Image(image, caption=str(i)) for i, image in enumerate(images)
                     ]
                 }
@@ -561,9 +560,10 @@ class RealFillDataset(Dataset):
             [
                 transforms_v2.RandomResize(size, int(1.125 * size)),
                 transforms_v2.RandomCrop(size),
-                transforms_v2.PILToTensor(),
-                transforms_v2.ConvertImageDtype(),
+                transforms_v2.ToImage(),
+                transforms_v2.ConvertImageDtype(torch.float),
                 transforms_v2.Normalize([0.5], [0.5]),
+
             ]
         )
 
@@ -578,28 +578,36 @@ class RealFillDataset(Dataset):
 
         is_target_image_instance = current_image_path == self.target_image
 
-        if not is_target_image_instance:
-            weighting = Image.new("L", image.size)
-        else:
+        if is_target_image_instance:
             weighting = self.cached_target_mask.copy()
+        else:
+            weighting = Image.new("L", image.size)
 
+        # Apply exactly the same random spatial transform to image and weighting
+        image, weighting = self.transform(image, weighting)
 
-        image, weighting = self.transform(image, weighting)  # weighting is normalized to [-1, 1] by the transform
-        example["images"], example["weightings"] = image, (weighting[0:1] < 0)
+        # weighting is normalized to [-1, 1] by the transform
+        # sample logic: target known region = weighting < 0
+        example["images"] = image
+        example["weightings"] = weighting[0:1] < 0
 
-        # - use a RANDOM training mask m for *all* images, including the target image
-        # - keep target mask information only in `weightings`, so target-image loss is restricted to known pixels
-        train_mask = make_mask(example["images"], self.size)
+        # ---- sample-consistent mask logic, but parameterized ----
+        if is_target_image_instance:
+            # target image always uses the REAL target mask
+            example["masks"] = 1.0 - example["weightings"].float()
+        elif random.random() < self.mask_dropout_prob:
+            # sample had hardcoded 0.1 full-mask branch for reference images
+            example["masks"] = torch.ones_like(example["images"][0:1])
+        else:
+            # otherwise use random synthetic mask for reference images
+            example["masks"] = make_mask(example["images"], self.size).float()
 
-        # Independent mask dropout with probability 0.1 (paper-closer approximation)
-        if random.random() < self.mask_dropout_prob:
-            train_mask = torch.zeros_like(example["images"][0:1])
+        # conditioning image follows sample logic
+        example["conditioning_images"] = example["images"] * (example["masks"] < 0.5)
 
-        example["masks"] = train_mask.float()
-        example["conditioning_images"] = example["images"] * (1.0 - example["masks"])
-
-        # Independent prompt dropout with probability 0.1
+        # ---- sample-consistent prompt dropout, but parameterized ----
         train_prompt = "" if random.random() < self.prompt_dropout_prob else self.train_prompt
+
         example["prompt_ids"] = self.tokenizer(
             train_prompt,
             truncation=True,
@@ -1093,10 +1101,11 @@ if __name__ == "__main__":
 #    --train_data_dir="realfill_dataset\RealBench\0" `
 #    --output_dir="bench0-model" `
 #    --resolution=512 `
-#    --train_batch_size=1 `
-#    --gradient_accumulation_steps=4 `
+#    --train_batch_size=16 `
+#    --gradient_accumulation_steps=1 `
 #    --mixed_precision=fp16 `
 #    --allow_tf32 `
+#    --gradient_checkpointing `
 #    --use_8bit_adam `
 #    --enable_xformers_memory_efficient_attention `
 #    --set_grads_to_none `
@@ -1105,11 +1114,11 @@ if __name__ == "__main__":
 #    --lr_scheduler="constant" `
 #    --lr_warmup_steps=100 `
 #    --max_train_steps=2000 `
-#    --validation_steps=2000 `
+#    --validation_steps=100 `
 #    --num_validation_images=1 `
-#    --checkpointing_steps=2000 `
+#    --checkpointing_steps=100 `
 #    --lora_rank=8 `
 #    --lora_dropout=0.1 `
 #    --lora_alpha=16 `
 #    --prompt_dropout_prob=0.1 `
-#    --mask_dropout_prob=0.1 `
+#    --mask_dropout_prob=0.1 
