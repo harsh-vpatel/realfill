@@ -14,15 +14,11 @@ import kornia as K
 from kornia.feature import LoFTR
 
 
-# =============================================================================
-# Hardcoded settings aligned with original infer.py
-# =============================================================================
-
 RESOLUTION = 512
 PROMPT = "a photo of sks"
 GUIDANCE_SCALE = 1.0
-SECOND_STAGE_SCHEDULER = "ddpm"   # aligned with original infer.py
-UNCERTAINTY_TOP_K = 4             # RAMR: use top 4 strong candidates for uncertainty
+SECOND_STAGE_SCHEDULER = "ddpm"   
+UNCERTAINTY_TOP_K = 4             # use top 4 strong candidates for uncertainty
 
 VALID_EXTS = {".png", ".jpg", ".jpeg"}
 
@@ -31,10 +27,6 @@ _MATCH_TRANSFORM = transforms.Compose([
     transforms.ToTensor(),
 ])
 
-
-# =============================================================================
-# LoFTR utilities (optional final-image diagnostic only)
-# =============================================================================
 
 def pil_to_loftr_gray(pil_img: Image.Image, device: str) -> torch.Tensor:
     t = _MATCH_TRANSFORM(pil_img.convert("RGB")).unsqueeze(0).to(device)
@@ -72,10 +64,6 @@ def correspondence_score(
     return total_matches
 
 
-# =============================================================================
-# Mask / image utilities
-# =============================================================================
-
 def feather_mask(mask_pil: Image.Image, radius: int = 3) -> Image.Image:
     if radius <= 0:
         return mask_pil
@@ -89,9 +77,6 @@ def load_binary_mask(mask_path: str) -> Image.Image:
     return binary_mask_image
 
 
-# =============================================================================
-# JSON parsing
-# =============================================================================
 
 def parse_scores_json(scores_json_path: str):
     """
@@ -128,10 +113,6 @@ def parse_scores_json(scores_json_path: str):
     parsed = sorted(parsed, key=lambda x: x["rank"])
     return parsed
 
-
-# =============================================================================
-# Ranked image loading
-# =============================================================================
 
 def load_ranked_paths(ranked_images_dir: str):
     ranked_dir = Path(ranked_images_dir)
@@ -175,9 +156,6 @@ def load_stack_for_ranks(ranked_paths: dict, ranks: list[int]) -> np.ndarray:
     return np.stack(imgs, axis=0)
 
 
-# =============================================================================
-# Uncertainty map + residual mask
-# =============================================================================
 
 def compute_uncertainty_map(stack: np.ndarray, mask_np: np.ndarray, method: str = "mad") -> np.ndarray:
     """
@@ -249,9 +227,6 @@ def save_uncertainty_map(uncertainty_map: np.ndarray, save_path: str) -> None:
     Image.fromarray(heat).save(save_path)
 
 
-# =============================================================================
-# Pipeline utilities
-# =============================================================================
 
 def set_scheduler(pipe: StableDiffusionInpaintPipeline):
     if SECOND_STAGE_SCHEDULER == "ddpm":
@@ -259,10 +234,6 @@ def set_scheduler(pipe: StableDiffusionInpaintPipeline):
     else:
         raise ValueError(f"Unsupported hardcoded scheduler: {SECOND_STAGE_SCHEDULER}")
 
-
-# =============================================================================
-# CLI
-# =============================================================================
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -311,9 +282,6 @@ def parse_args():
     return parser.parse_args()
 
 
-# =============================================================================
-# Main
-# =============================================================================
 
 def main():
     args = parse_args()
@@ -370,15 +338,11 @@ def main():
         ])
         print(f"Loaded {len(ref_paths)} reference images for final-image scoring")
 
-    # -------------------------------------------------------------------------
-    # RAMR selection logic
-    # -------------------------------------------------------------------------
-    # Base image = ranked 00.png from updated infer.py's multi-cue ranking
+    # Base image = ranked 00.png 
     best_rank_for_base = 0
     if best_rank_for_base not in ranked_paths:
         raise ValueError("ranked_images_dir must contain 00.png as the top-ranked base image.")
 
-    # Uncertainty set = top 8 strong candidates by the same RAMR ranking
     ordered_ranks = [row["rank"] for row in ranked_rows]
     uncertainty_ranks_used = ordered_ranks[:min(UNCERTAINTY_TOP_K, len(ordered_ranks))]
 
@@ -424,9 +388,6 @@ def main():
     final_score = None
     score_delta = None
 
-    # -------------------------------------------------------------------------
-    # RAMR stage-2 residual repair
-    # -------------------------------------------------------------------------
     if (residual_mask_np > 127).sum() == 0:
         final = base_img
         final.save(os.path.join(args.output_dir, "04_final.png"))
@@ -480,9 +441,6 @@ def main():
     if base_score is not None and final_score is not None:
         score_delta = final_score - base_score
 
-    # -------------------------------------------------------------------------
-    # Save summary
-    # -------------------------------------------------------------------------
     summary = {
         "ramr_mode": True,
         "best_rank_row": ranked_rows[0],
@@ -510,10 +468,6 @@ def main():
     with open(os.path.join(args.output_dir, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
 
-    # -------------------------------------------------------------------------
-    # Console summary
-    # -------------------------------------------------------------------------
-    print("\n── RAMR stage-2 configuration ──")
     print(f"  base image source        = ranked {best_rank_for_base:02d}.png")
     print(f"  selected candidate idx   = {selected_base_row['candidate_idx'] if selected_base_row else None}")
     print(f"  selected candidate score = {selected_base_row['score'] if selected_base_row else None}")
@@ -538,7 +492,7 @@ if __name__ == "__main__":
 
 
 """
-python infer_ramr2.py `
+python infer_residual_refilling.py `
   --model_dir="bench4-model" `
   --validation_mask="realfill_dataset/RealBench/4/target/mask.png" `
   --ranked_images_dir="bench4-32ranked_top16_ramr" `
