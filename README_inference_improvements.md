@@ -153,7 +153,7 @@ python infer_ring.py \
 
 ---
 
-# 3. Residual Refilling / Stage-2 Repair
+# 3. Residual Refilling
 
 **Script:** `infer_residual_refilling.py`
 
