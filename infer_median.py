@@ -171,7 +171,7 @@ def generate_stack(
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="PMC-only inference for RealFill."
+        description="PMC inference for RealFill."
     )
     p.add_argument("--model_dir", type=str, required=True,
                    help="Fine-tuned RealFill model directory.")
@@ -326,7 +326,6 @@ def main():
         print(f"Raw candidate scores saved to: {args.scores_json}")
 
     # Compute PMC
-    print("Computing pixel-wise median consensus...")
     consensus_img = compute_pmc(
         stack=stack,
         mask_np=mask_np,
@@ -364,7 +363,7 @@ if __name__ == "__main__":
 python infer_median.py `
   --model_dir="bench21-model" `
   --train_data_dir="realfill_dataset/RealBench/21" `
-  --output_dir="bench21-pmc-16" `
+  --output_dir="bench21-median-16" `
   --num_images=16 `
   --num_inference_steps=50 `
   --guidance_scale=1.0 `
@@ -373,6 +372,6 @@ python infer_median.py `
   --sharpen_alpha=0.4 `
   --sharpen_radius=3 `
   --reference_dir="realfill_dataset/RealBench/21/ref" `
-  --scores_json="bench21-pmc-16/scores.json" `
+  --scores_json="bench21-median-16/scores.json" `
   --save_variance_map
 """
