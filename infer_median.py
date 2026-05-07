@@ -1,72 +1,3 @@
-"""
-infer_pmc.py — Pixel-wise Median Consensus (PMC)
-=================================================
-A novel inference-time aggregation strategy for RealFill.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-WHY REALFILL FAILS (the actual problem)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-RealFill trains on ~6 images and generates N=16 candidates during
-inference. The paper then ranks them and keeps the best K. This is
-already an acknowledgement that individual generations are unreliable.
-
-The ranking strategy has a fundamental flaw: it selects by GLOBAL score
-(DINO/CLIP similarity over the whole image). A globally-good image can
-still have locally-bad patches — wrong texture in one corner, wrong
-luminance in another. Once you commit to one image, you're stuck with
-all its local failures.
-
-Concretely, stochastic diffusion sampling means:
-  - For any given pixel, some of the 16 samples will be correct.
-  - Some will be wrong (bad colour, smeared texture, wrong brightness).
-  - A global ranking score cannot identify which pixels are wrong.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-THE IDEA: PIXEL-WISE MEDIAN CONSENSUS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Instead of picking the best single image, fuse ALL N images at the
-PIXEL level by taking the per-channel median inside the mask region.
-
-  stack shape: (N, H, W, 3)
-  consensus  = np.median(stack, axis=0)   →  (H, W, 3)
-  output     = consensus  inside  mask
-             + original   outside mask
-
-Properties that make this safe:
-  1. ZERO cascading: all N images are generated fully independently.
-     There are no dependencies between samples; one bad image cannot
-     corrupt another.
-  2. Outlier robustness: with N=16, a single catastrophic sample
-     (wrong colour, texture collapse) can shift the median by at most
-     1 rank step — it has negligible influence on the result.
-  3. No new failure modes: the pipeline call is identical to standard
-     RealFill inference. PMC is purely a post-processing aggregation.
-  4. Graceful degradation: if N=1, PMC returns that image unchanged.
-     If N=2, it returns the per-pixel average. Better with more samples.
-  5. No model changes, no training changes, no architectural changes.
-
-Why MEDIAN and not MEAN?
-  - Mean blurs sharp edges (ghost effect when two samples disagree on
-    where an edge falls). Median preserves the dominant edge position.
-  - Mean is pulled by outliers. A single over-bright sample shifts the
-    mean; it doesn't shift the median.
-  - For colour accuracy: mean of [red, green, green] = yellowish green.
-    Median = green. Median gives the most-agreed colour.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-OPTIONAL ENHANCEMENT: SPECTRAL SHARPENING
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-The median slightly softens fine texture because it selects the
-"middle" value per-channel independently — the selected red, green,
-and blue may not come from the same sample, causing very mild
-desaturation in high-frequency detail.
-
-Optional fix: spectral sharpening via unsharp masking.
-  sharpened = median + α * (median - gaussian_blur(median))
-Default α=0.4. This restores texture crispness without changing
-the consensus structure. Can be disabled with --sharpen_alpha 0.
-
-"""
 
 import argparse
 import os
@@ -84,10 +15,6 @@ import kornia as K
 from torchvision import transforms
 from kornia.feature import LoFTR
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# LoFTR ranking utilities
-# ─────────────────────────────────────────────────────────────────────────────
 
 VALID_EXTS = {".png", ".jpg", ".jpeg"}
 
@@ -125,10 +52,6 @@ def correspondence_score(gen_img, ref_paths, binary_mask_img, threshold, loftr, 
 
     return total_matches
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Core aggregation functions
-# ─────────────────────────────────────────────────────────────────────────────
 
 def compute_pmc(
     stack: np.ndarray,
@@ -208,9 +131,6 @@ def save_variance_map(var_map: np.ndarray, save_path: str) -> None:
     Image.fromarray(heatmap_rgb).save(save_path)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Inference
-# ─────────────────────────────────────────────────────────────────────────────
 
 def generate_stack(
     pipeline: StableDiffusionInpaintPipeline,
@@ -248,9 +168,6 @@ def generate_stack(
     return np.stack(images, axis=0)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CLI
-# ─────────────────────────────────────────────────────────────────────────────
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -444,8 +361,8 @@ if __name__ == "__main__":
 
 
 """
-python inferv3.py `
-  --model_dir="bench21-model-exported" `
+python infer_median.py `
+  --model_dir="bench21-model" `
   --train_data_dir="realfill_dataset/RealBench/21" `
   --output_dir="bench21-pmc-16" `
   --num_images=16 `
