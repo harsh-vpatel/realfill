@@ -15,10 +15,6 @@ from torchvision import transforms
 from kornia.feature import LoFTR
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Ring construction
-# ─────────────────────────────────────────────────────────────────────────────
-
 def build_erosion_rings(mask_np: np.ndarray, n_rings: int, kernel_size: int):
     """
     Decompose a binary mask into concentric rings via morphological erosion.
@@ -76,10 +72,6 @@ def visualise_rings(mask_np: np.ndarray, rings, save_path=None):
     return vis
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# LoFTR ranking utilities
-# ─────────────────────────────────────────────────────────────────────────────
-
 VALID_EXTS = {".png", ".jpg", ".jpeg"}
 
 match_transform = transforms.Compose([
@@ -117,10 +109,6 @@ def correspondence_score(gen_img, ref_paths, binary_mask_img, threshold, loftr, 
     return total_matches
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared inference pass
-# ─────────────────────────────────────────────────────────────────────────────
-
 def run_inpaint_pass(
     pipeline,
     image_pil,
@@ -139,10 +127,6 @@ def run_inpaint_pass(
         generator=generator,
     ).images[0]
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Cascaded Boundary Inpainting (CBI)
-# ─────────────────────────────────────────────────────────────────────────────
 
 def cbi_fill(
     pipeline,
@@ -228,9 +212,6 @@ def cbi_fill(
     return Image.fromarray(final_np.clip(0, 255).astype(np.uint8))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Utility
-# ─────────────────────────────────────────────────────────────────────────────
 
 def mask_coverage(mask_pil):
     arr = np.array(mask_pil.convert("L"))
@@ -244,9 +225,6 @@ def recommended_n_rings(coverage, kernel_size, image_size=512):
     return min(n, 8)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CLI
-# ─────────────────────────────────────────────────────────────────────────────
 
 def parse_args():
     p = argparse.ArgumentParser(description="CBI-only inference aligned with improved RealFill training.")
@@ -440,18 +418,21 @@ def main():
 if __name__ == "__main__":
     main()
 
-#python inferv2.py `
-#  --model_dir="bench0v2-model" `
-#  --validation_image="realfill_dataset/RealBench/0/target/target.png" `
-#  --validation_mask="realfill_dataset/RealBench/0/target/mask.png" `
-#  --reference_dir="realfill_dataset/RealBench/0/ref" `
-#  --output_dir="bench0-cbi-16ranked" `
-#  --num_images=16 `
-#  --top_k=16 `
-#  --scores_json="bench0-cbi-16ranked/scores.json" `
-#  --num_inference_steps=50 `
-#  --guidance_scale=1.0 `
-#  --resolution=512 `
-#  --n_rings=4 `
-#  --ring_kernel_size=24 `
-#  --seed=42
+
+"""
+python infer_ring.py `
+  --model_dir="bench0-model" `
+  --validation_image="realfill_dataset/RealBench/0/target/target.png" `
+  --validation_mask="realfill_dataset/RealBench/0/target/mask.png" `
+  --reference_dir="realfill_dataset/RealBench/0/ref" `
+  --output_dir="bench0-ring-16ranked" `
+  --num_images=16 `
+  --top_k=16 `
+  --scores_json="bench0-ring-16ranked/scores.json" `
+  --num_inference_steps=50 `
+  --guidance_scale=1.0 `
+  --resolution=512 `
+  --n_rings=4 `
+  --ring_kernel_size=24 `
+  --seed=42
+"""
