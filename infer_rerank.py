@@ -12,10 +12,6 @@ import kornia as K
 from kornia.feature import LoFTR
 
 
-# =============================================================================
-# Constants
-# =============================================================================
-
 IMAGE_SIZE = 512
 VALID_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -34,10 +30,6 @@ DINO_TRANSFORM = transforms.Compose([
     ),
 ])
 
-
-# =============================================================================
-# CLI
-# =============================================================================
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -153,10 +145,6 @@ def parse_args():
     return parser.parse_args()
 
 
-# =============================================================================
-# I/O helpers
-# =============================================================================
-
 def load_candidate_image_paths(input_dir: str) -> dict:
     input_path = Path(input_dir)
     if not input_path.exists():
@@ -255,10 +243,6 @@ def lookup_optional_score(score_map: dict, base_rank: int, image_name: str):
     return None
 
 
-# =============================================================================
-# LoFTR helpers
-# =============================================================================
-
 def image_to_loftr_gray(image_pil: Image.Image) -> torch.Tensor:
     tensor = LOFTR_IMAGE_TRANSFORM(image_pil.convert("RGB")).unsqueeze(0).to(DEVICE)
     return K.color.rgb_to_grayscale(tensor)
@@ -294,9 +278,6 @@ def compute_reference_match_score(
     return float(total_matches)
 
 
-# =============================================================================
-# Feature functions
-# =============================================================================
 
 def compute_stack_consensus_scores(candidate_stack: np.ndarray, fill_mask: np.ndarray) -> list:
     """
@@ -350,10 +331,6 @@ def compute_boundary_seam_scores(candidate_stack: np.ndarray, fill_mask: np.ndar
     return scores
 
 
-# =============================================================================
-# Optional DINOv2 feature
-# =============================================================================
-
 def try_load_dino_model(model_name: str):
     try:
         model = torch.hub.load("facebookresearch/dinov2", model_name)
@@ -397,10 +374,6 @@ def compute_dino_reference_similarity(candidate_images: list, reference_paths: l
     return scores
 
 
-# =============================================================================
-# Optional NR-IQA features
-# =============================================================================
-
 def try_import_pyiqa():
     try:
         import pyiqa
@@ -433,10 +406,6 @@ def compute_pyiqa_metric_scores(candidate_images: list, metric) -> list:
                 scores.append(float(output))
     return scores
 
-
-# =============================================================================
-# Revised structural-shortlist reranker
-# =============================================================================
 
 def robust_zscore(values, lower_quantile=0.10, upper_quantile=0.90):
     values = np.asarray(values, dtype=np.float32)
@@ -540,17 +509,11 @@ def rerank_with_structural_shortlist(
     return rerank_score.tolist(), debug
 
 
-# =============================================================================
-# Main
-# =============================================================================
 
 if __name__ == "__main__":
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # -------------------------------------------------------------------------
-    # Load inputs
-    # -------------------------------------------------------------------------
     candidate_image_paths = load_candidate_image_paths(args.input_dir)
     base_ranks = list(candidate_image_paths.keys())
 
@@ -566,9 +529,6 @@ if __name__ == "__main__":
     if args.reference_dir:
         reference_paths = load_reference_paths(args.reference_dir)
 
-    # -------------------------------------------------------------------------
-    # Load candidate images
-    # -------------------------------------------------------------------------
     print(f"Loading {len(base_ranks)} candidates from {args.input_dir} ...")
 
     candidate_records = []
@@ -603,9 +563,6 @@ if __name__ == "__main__":
 
     candidate_stack = np.stack(candidate_stack, axis=0)
 
-    # -------------------------------------------------------------------------
-    # Optional LoFTR recomputation if scores are missing
-    # -------------------------------------------------------------------------
     need_loftr_recompute = any(c["reference_match_score"] is None for c in candidate_records) and len(reference_paths) > 0
     if need_loftr_recompute:
         print("Recomputing LoFTR scores (no input_scores_json provided)...")
@@ -624,9 +581,6 @@ if __name__ == "__main__":
         del loftr_model
         torch.cuda.empty_cache()
 
-    # -------------------------------------------------------------------------
-    # Compute features
-    # -------------------------------------------------------------------------
     print("Computing features...")
 
     # F1: LoFTR / reference consistency
@@ -686,9 +640,6 @@ if __name__ == "__main__":
     print(f"  maniqa_score:              {availability(maniqa_scores)}")
     print(f"  clipiqa_score:             {availability(clipiqa_scores)}")
 
-    # -------------------------------------------------------------------------
-    # Attach features to candidate records
-    # -------------------------------------------------------------------------
     for i, candidate in enumerate(candidate_records):
         candidate["stack_consensus_score"] = stack_consensus_scores[i]
         candidate["boundary_seam_score"] = boundary_seam_scores[i]
@@ -697,9 +648,6 @@ if __name__ == "__main__":
         candidate["maniqa_score"] = maniqa_scores[i]
         candidate["clipiqa_score"] = clipiqa_scores[i]
 
-    # -------------------------------------------------------------------------
-    # Non-learned reranking
-    # -------------------------------------------------------------------------
     print("\nRunning revised structural-shortlist reranking...")
 
     rerank_scores, rerank_metadata = rerank_with_structural_shortlist(
@@ -714,9 +662,6 @@ if __name__ == "__main__":
     candidate_records.sort(key=lambda candidate: candidate["rerank_score"], reverse=True)
     selected_records = candidate_records[:min(args.top_k, len(candidate_records))]
 
-    # -------------------------------------------------------------------------
-    # Save reranked outputs
-    # -------------------------------------------------------------------------
     for new_rank, candidate in enumerate(selected_records):
         candidate["image"].save(os.path.join(args.output_dir, f"{new_rank:02d}.png"))
 
@@ -768,9 +713,6 @@ if __name__ == "__main__":
     with open(feature_dump_path, "w", encoding="utf-8") as f:
         json.dump(feature_dump, f, indent=2)
 
-    # -------------------------------------------------------------------------
-    # Summary
-    # -------------------------------------------------------------------------
     print("\n── Results ──")
     print(f"  Saved top {len(selected_records)} reranked images to: {args.output_dir}")
     print(f"  Reranking mode: {rerank_metadata['mode']}")
@@ -787,7 +729,7 @@ if __name__ == "__main__":
 
 
 """
-python infer_ramr1.py `
+python infer_rerank.py `
   --input_dir="bench31-32ranked_top16_ramr" `
   --input_scores_json="bench31-32ranked_top16_ramr/scores.json" `
   --validation_mask="realfill_dataset/RealBench/31/target/mask.png" `
