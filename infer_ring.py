@@ -227,7 +227,7 @@ def recommended_n_rings(coverage, kernel_size, image_size=512):
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="CBI-only inference aligned with improved RealFill training.")
+    p = argparse.ArgumentParser(description="CBI inference for RealFill.")
 
     p.add_argument("--model_dir", type=str, required=True,
                    help="Path to final exported improved RealFill model.")
