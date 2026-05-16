@@ -1,7 +1,9 @@
 # RealFill
 
 [RealFill](https://arxiv.org/abs/2309.16668) is a method to personalize text2image inpainting models like stable diffusion inpainting given just a few (1~5) images of a scene.
-The `train_realfill.py` script shows how to implement the training procedure for stable diffusion inpainting.
+The `train_realfill.py` script shows how to implement the training procedure for stable diffusion inpainting. Since the diffusion model from stabilityai is deprecated, we will use sd2-community/stable-diffusion-2-inpainting instead.
+
+The first part is modified from the forked github repo [by](https://github.com/thuanz123/realfill)
 
 
 ## Running locally with PyTorch
@@ -46,7 +48,7 @@ We already provide some images for testing in data folder
 You only have to launch the training using:
 
 ```bash
-export MODEL_NAME=""sd2-community/stable-diffusion-2-inpainting" "
+export MODEL_NAME="sd2-community/stable-diffusion-2-inpainting"
 export TRAIN_DIR="data/flowerwoman"
 export OUTPUT_DIR="flowerwoman-model"
 
@@ -77,7 +79,7 @@ It is possible to run realfill on a low-memory GPU by using the following optimi
 - [setting grads to none](#set-grads-to-none)
 
 ```bash
-export MODEL_NAME=""sd2-community/stable-diffusion-2-inpainting" "
+export MODEL_NAME="sd2-community/stable-diffusion-2-inpainting"
 export TRAIN_DIR="data/flowerwoman"
 export OUTPUT_DIR="flowerwoman-model"
 
