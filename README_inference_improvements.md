@@ -1,3 +1,5 @@
+# RealFill experiment for weighted mask loss
+
 # RealFill Inference Improvements
 
 This repository provides **four inference-time improvements** for a trained **RealFill** model.
