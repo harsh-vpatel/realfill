@@ -46,7 +46,7 @@ We already provide some images for testing in data folder
 You only have to launch the training using:
 
 ```bash
-export MODEL_NAME="stabilityai/stable-diffusion-2-inpainting"
+export MODEL_NAME=""sd2-community/stable-diffusion-2-inpainting" "
 export TRAIN_DIR="data/flowerwoman"
 export OUTPUT_DIR="flowerwoman-model"
 
@@ -65,6 +65,8 @@ accelerate launch train_realfill.py \
   --lora_rank=8 \
   --lora_dropout=0.1 \
   --lora_alpha=16 \
+  --prompt_dropout_prob=0.1 \
+  --mask_dropout_prob=0.1
 ```
 
 ### Training on a low-memory GPU:
@@ -75,7 +77,7 @@ It is possible to run realfill on a low-memory GPU by using the following optimi
 - [setting grads to none](#set-grads-to-none)
 
 ```bash
-export MODEL_NAME="stabilityai/stable-diffusion-2-inpainting"
+export MODEL_NAME=""sd2-community/stable-diffusion-2-inpainting" "
 export TRAIN_DIR="data/flowerwoman"
 export OUTPUT_DIR="flowerwoman-model"
 
@@ -97,6 +99,8 @@ accelerate launch train_realfill.py \
   --lora_rank=8 \
   --lora_dropout=0.1 \
   --lora_alpha=16 \
+  --prompt_dropout_prob=0.1 \
+  --mask_dropout_prob=0.1
 ```
 
 ### Training with gradient checkpointing and 8-bit optimizers:
