@@ -1,5 +1,39 @@
-# RealFill experiment for weighted mask loss
+# RealFill: Experiment for Weighted Mask Loss
 
+Extra argument added inside train_realfill_newloss.py, use train_realfill_newloss.py for training instead and add a multiplier (defaulted to 5.0).
+The multiplier will increase the weight of the loss inside synthetic mask by the multiplier value.
+```bash
+-mask_loss_multiplier 5
+```
+
+e.g.
+```bash
+!accelerate launch train_realfill_newloss.py \
+  --pretrained_model_name_or_path="sd2-community/stable-diffusion-2-inpainting" \
+  --train_data_dir="/content/3010_realfill/realfill_dataset" \
+  --output_dir="/content/3010_realfill/runs/bench6-model" \
+  --resolution=512 \
+  --train_batch_size=16 \
+  --gradient_accumulation_steps=1 \
+  --mixed_precision=fp16 \
+  --allow_tf32 \
+  --gradient_checkpointing \
+  --set_grads_to_none \
+  --unet_learning_rate=2e-4 \
+  --text_encoder_learning_rate=4e-5 \
+  --lr_scheduler="constant" \
+  --lr_warmup_steps=100 \
+  --max_train_steps=2000 \
+  --validation_steps=500 \
+  --num_validation_images=2 \
+  --checkpointing_steps=500 \
+  --lora_rank=8 \
+  --lora_dropout=0.1 \
+  --lora_alpha=16 \
+  --prompt_dropout_prob=0.1 \
+  --mask_dropout_prob=0.1 \
+  --mask_loss_multiplier 5
+```
 # RealFill Inference Improvements
 
 This repository provides **four inference-time improvements** for a trained **RealFill** model.
