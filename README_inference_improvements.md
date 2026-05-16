@@ -6,12 +6,15 @@ The multiplier will increase the weight of the loss inside synthetic mask by the
 -mask_loss_multiplier 5
 ```
 
-e.g.
+Example:
 ```bash
+export MODEL_NAME=""sd2-community/stable-diffusion-2-inpainting" "
+export TRAIN_DIR="data/flowerwoman"
+export OUTPUT_DIR="flowerwoman-model"
 !accelerate launch train_realfill_newloss.py \
-  --pretrained_model_name_or_path="sd2-community/stable-diffusion-2-inpainting" \
-  --train_data_dir="/content/3010_realfill/realfill_dataset" \
-  --output_dir="/content/3010_realfill/runs/bench6-model" \
+  --pretrained_model_name_or_path=$MODEL_NAME \
+  --train_data_dir=$TRAIN_DIR \
+  --output_dir=$OUTPUT_DIR \
   --resolution=512 \
   --train_batch_size=16 \
   --gradient_accumulation_steps=1 \
